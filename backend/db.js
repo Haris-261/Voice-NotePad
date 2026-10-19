@@ -17,12 +17,21 @@ async function ensureDevelopmentAdmin() {
 }
 
 export function connectDb() {
-  if (mongoose.connection.readyState === 1) return Promise.resolve(mongoose.connection);
-  if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is not configured');
-  connectionPromise ||= mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 8000 }).then(async connection => {
+  if (mongoose.connection.readyState === 1) {
     console.log('Database Connected');
-    await ensureDevelopmentAdmin();
-    return connection;
-  });
+    return Promise.resolve(mongoose.connection);
+  }
+  if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is not configured');
+  connectionPromise ||= mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 8000 })
+    .then(async connection => {
+      console.log('Database Connected');
+      await ensureDevelopmentAdmin();
+      return connection;
+    })
+    .catch(error => {
+      connectionPromise = undefined;
+      console.error('Database Connection Failed:', error.message);
+      throw error;
+    });
   return connectionPromise;
 }

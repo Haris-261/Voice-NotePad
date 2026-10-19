@@ -10,7 +10,14 @@ const app = express();
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
-app.get('/api/health', (req, res) => res.json({ ok: true, databaseConfigured: Boolean(process.env.MONGODB_URI), geminiConfigured: Boolean(process.env.GEMINI_API_KEY) }));
+app.get('/api/health', async (req, res) => {
+  try {
+    await connectDb();
+    res.json({ ok: true, database: 'connected', geminiConfigured: Boolean(process.env.GEMINI_API_KEY) });
+  } catch (error) {
+    res.status(503).json({ ok: false, database: 'disconnected', message: error.message });
+  }
+});
 app.use(async (req, res, next) => {
   if (!req.path.startsWith('/api')) return next();
   try { await connectDb(); next(); } catch (error) { res.status(503).json({ message: 'Database unavailable', detail: process.env.NODE_ENV === 'development' ? error.message : undefined }); }
