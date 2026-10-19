@@ -8,7 +8,14 @@ import { requireAdmin, requireAuth, signToken } from './auth.js';
 
 const app = express();
 app.use(helmet({ crossOriginResourcePolicy: false }));
-app.use(cors());
+const corsOptions = {
+  origin: true,
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 204
+};
+app.use(cors(corsOptions));
+app.options('/{*path}', cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
 app.get('/api/health', async (req, res) => {
   try {
