@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import { User } from './models.js';
 
 export function signToken(user) {
-  return jwt.sign({ sub: user.id }, process.env.JWT_SECRET, { expiresIn: '10d' });
+  return jwt.sign({ sub: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 }
 
 export async function requireAuth(req, res, next) {
