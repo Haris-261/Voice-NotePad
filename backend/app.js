@@ -91,7 +91,7 @@ app.post('/api/ai/parse', requireAuth, async (req, res) => {
   const transcript = String(req.body.transcript || '').trim().slice(0, 2000);
   if (!transcript) return res.status(400).json({ message: 'Transcript is required' });
   if (!process.env.GEMINI_API_KEY) return res.status(503).json({ message: 'Gemini is not configured' });
-  const models = [...new Set([process.env.GEMINI_MODEL || 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'])];
+  const models = [...new Set(['gemini-3.5-flash-lite', process.env.GEMINI_MODEL || 'gemini-3.8-flash', 'gemini-3.6-flash'])];
   const schema = { type: 'ARRAY', items: { type: 'OBJECT', required: ['englishName', 'urduName', 'romanName', 'amount'], properties: {
     originalText: { type: 'STRING' }, englishName: { type: 'STRING' }, urduName: { type: 'STRING' }, romanName: { type: 'STRING' }, amount: { type: 'NUMBER' }
   } } };
@@ -99,15 +99,19 @@ app.post('/api/ai/parse', requireAuth, async (req, res) => {
   let response; let lastDetail = '';
   for (let index = 0; index < models.length; index += 1) {
     const model = models[index];
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     try {
       response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: requestBody
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: requestBody, signal: controller.signal
       });
     } catch (error) {
-      lastDetail = error.message;
+      lastDetail = error.name === 'AbortError' ? 'Request timed out after 5 seconds' : error.message;
       console.warn(`Gemini model ${model} request failed:`, lastDetail);
       if (index < models.length - 1) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** index) + Math.floor(Math.random() * 250)));
       continue;
+    } finally {
+      clearTimeout(timeout);
     }
     if (response.ok) break;
     const upstream = await response.json().catch(() => ({}));
@@ -119,7 +123,13 @@ app.post('/api/ai/parse', requireAuth, async (req, res) => {
   }
   if (!response?.ok) {
     console.error('All Gemini model attempts failed:', lastDetail);
-    return res.status(503).json({ message: 'AI service is temporarily busy. Please try again in a moment.' });
+    const fallbackItems = transcript.split(/\r?\n|\s*,\s*|\s+aur\s+/i).map(value => value.trim()).filter(Boolean).map(value => {
+      const amountMatch = value.match(/(?:rs\.?|pkr)?\s*([\d,]+(?:\.\d+)?)/i);
+      const amount = amountMatch ? Number(amountMatch[1].replace(/,/g, '')) : 0;
+      const name = value.replace(/(?:rs\.?|pkr)?\s*[\d,]+(?:\.\d+)?\s*(?:rs\.?|pkr)?/ig, ' ').replace(/^\s*(?:ki|ka|ke)\s+/i, '').replace(/\s+/g, ' ').trim() || 'Expense';
+      return { id: crypto.randomUUID(), originalText: value, englishName: name, urduName: name, romanName: name, amount };
+    });
+    return res.json({ items: fallbackItems, fallback: true });
   }
   const data = await response.json();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
