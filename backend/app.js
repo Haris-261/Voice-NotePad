@@ -91,19 +91,35 @@ app.post('/api/ai/parse', requireAuth, async (req, res) => {
   const transcript = String(req.body.transcript || '').trim().slice(0, 2000);
   if (!transcript) return res.status(400).json({ message: 'Transcript is required' });
   if (!process.env.GEMINI_API_KEY) return res.status(503).json({ message: 'Gemini is not configured' });
-  const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+  const models = [...new Set([process.env.GEMINI_MODEL || 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'])];
   const schema = { type: 'ARRAY', items: { type: 'OBJECT', required: ['englishName', 'urduName', 'romanName', 'amount'], properties: {
     originalText: { type: 'STRING' }, englishName: { type: 'STRING' }, urduName: { type: 'STRING' }, romanName: { type: 'STRING' }, amount: { type: 'NUMBER' }
   } } };
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: [{ text: `Extract expense entries and their amounts from mixed Urdu, Roman Urdu, or English. Preserve the complete meaningful description and remove only the numeric amount and currency words. Return natural English, Urdu script, and Roman Urdu descriptions. Example: "Haris ko 2000 kharcha diya" becomes englishName "Gave expense money to Haris", urduName "حارث کو خرچہ دیا", romanName "Haris ko kharcha diya", amount 2000. Example: "500 ki sabzi" becomes englishName "Vegetables", urduName "سبزی", romanName "Sabzi", amount 500. Input: ${transcript}` }] }], generationConfig: { responseMimeType: 'application/json', responseSchema: schema, temperature: 0.1 } })
-  });
-  if (!response.ok) {
+  const requestBody = JSON.stringify({ contents: [{ parts: [{ text: `Extract expense entries and their amounts from mixed Urdu, Roman Urdu, or English. Preserve the complete meaningful description and remove only the numeric amount and currency words. Return natural English, Urdu script, and Roman Urdu descriptions. Example: "Haris ko 2000 kharcha diya" becomes englishName "Gave expense money to Haris", urduName "حارث کو خرچہ دیا", romanName "Haris ko kharcha diya", amount 2000. Example: "500 ki sabzi" becomes englishName "Vegetables", urduName "سبزی", romanName "Sabzi", amount 500. Input: ${transcript}` }] }], generationConfig: { responseMimeType: 'application/json', responseSchema: schema, temperature: 0.1 } });
+  let response; let lastDetail = '';
+  for (let index = 0; index < models.length; index += 1) {
+    const model = models[index];
+    try {
+      response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: requestBody
+      });
+    } catch (error) {
+      lastDetail = error.message;
+      console.warn(`Gemini model ${model} request failed:`, lastDetail);
+      if (index < models.length - 1) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** index) + Math.floor(Math.random() * 250)));
+      continue;
+    }
+    if (response.ok) break;
     const upstream = await response.json().catch(() => ({}));
-    const detail = upstream?.error?.message || `Gemini returned HTTP ${response.status}`;
-    console.error('Gemini API error:', detail);
-    return res.status(502).json({ message: 'AI processing failed', detail });
+    lastDetail = upstream?.error?.message || `Gemini returned HTTP ${response.status}`;
+    console.warn(`Gemini model ${model} failed with HTTP ${response.status}:`, lastDetail);
+    const transient = response.status === 408 || response.status === 429 || response.status >= 500;
+    if (!transient) break;
+    if (index < models.length - 1) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** index) + Math.floor(Math.random() * 250)));
+  }
+  if (!response?.ok) {
+    console.error('All Gemini model attempts failed:', lastDetail);
+    return res.status(503).json({ message: 'AI service is temporarily busy. Please try again in a moment.' });
   }
   const data = await response.json();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
